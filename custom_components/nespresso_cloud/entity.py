@@ -5,19 +5,8 @@ from __future__ import annotations
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
 from .coordinator import MachineSnapshot, NespressoCoordinator
-from .lib import Machine
-
-# Profile-code (`machine.type`) → human marketing name.
-MODEL_BY_PROFILE: dict[str, str] = {
-    "machinesVenusProfile": "Vertuo Next",
-    "machinesVenusOneProfile": "Vertuo Pop",
-    "machinesVenusMiniProfile": "Vertuo Up",
-    "machinesVenusMoonProfile": "Vertuo Pop+",
-    "machinesVenus1Plus1BRProfile": "Vertuo Creatista",
-    "machinesVenus1Plus1DLProfile": "Vertuo Lattissima",
-}
+from .device import build_device_info
 
 
 class NespressoCloudEntity(CoordinatorEntity[NespressoCoordinator]):
@@ -49,31 +38,9 @@ class NespressoCloudEntity(CoordinatorEntity[NespressoCoordinator]):
 
     @property
     def device_info(self) -> DeviceInfo:
-        """Build the device info from the live snapshot.
+        """Build the device info used when the entity is first registered.
 
-        Computed dynamically so rename/firmware/serial changes on the
-        Nespresso side propagate without an HA reload.
+        HA only reads this at registration; later rename/firmware changes
+        are pushed to the device registry by the coordinator.
         """
-        snap = self._snapshot
-        machine = snap.machine if snap else None
-        product_id = machine.product_id if machine else None
-        # Strip the catalog prefix so the displayed model_id is the SKU
-        # users see on packaging (e.g. ``ENV300W``), not ``erp.fr.b2c/prod/ENV300W``.
-        model_id = product_id.split("/")[-1] if product_id else None
-        return DeviceInfo(
-            identifiers={(DOMAIN, self._machine_id)},
-            name=(machine.custom_name if machine and machine.custom_name else None)
-            or self._default_name(machine),
-            manufacturer="Nespresso",
-            model=MODEL_BY_PROFILE.get(machine.type, machine.type) if machine else None,
-            model_id=model_id,
-            serial_number=machine.serial_number if machine else None,
-            sw_version=snap.info.machine_fw if snap and snap.info else None,
-        )
-
-    def _default_name(self, machine: Machine | None) -> str:
-        if not machine:
-            return "Nespresso Machine"
-        suffix = (machine.serial_number or machine.id)[-6:]
-        model = MODEL_BY_PROFILE.get(machine.type, "Nespresso")
-        return f"{model} {suffix}"
+        return build_device_info(self._machine_id, self._snapshot)

@@ -29,16 +29,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: NespressoCloudEntry) -> 
         raise ConfigEntryNotReady(str(err)) from err
 
     entry.runtime_data = coordinator
-    entry.async_on_unload(entry.add_update_listener(_async_reload_on_update))
+    loaded_options = dict(entry.options)
+
+    async def _async_reload_on_options_change(
+        hass: HomeAssistant, entry: NespressoCloudEntry
+    ) -> None:
+        """Reload so the coordinator picks up changed options.
+
+        Update listeners fire on every entry change, including the token
+        rotation persisted every ~2h, so only reload when options differ.
+        """
+        if dict(entry.options) != loaded_options:
+            await hass.config_entries.async_reload(entry.entry_id)
+
+    entry.async_on_unload(entry.add_update_listener(_async_reload_on_options_change))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     return True
-
-
-async def _async_reload_on_update(
-    hass: HomeAssistant, entry: NespressoCloudEntry
-) -> None:
-    """Reload so the coordinator picks up changed options."""
-    await hass.config_entries.async_reload(entry.entry_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: NespressoCloudEntry) -> bool:
