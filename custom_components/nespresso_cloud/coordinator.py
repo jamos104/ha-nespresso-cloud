@@ -11,6 +11,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_COUNTRY
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -32,6 +33,7 @@ from .const import (
     SCAN_INTERVAL_IDLE_S,
     SCAN_INTERVAL_OFFLINE_S,
 )
+from .device import build_device_info
 from .lib import (
     Machine,
     MachineInfo,
@@ -132,6 +134,10 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
     async def _async_update_data(self) -> CoordinatorData:
         """Poll every paired machine and bundle the snapshots."""
         try:
+            # Refresh up front so a refresh failure fails the whole poll (and
+            # backs off) instead of being swallowed by every per-machine call.
+            await self.api.async_ensure_token()
+
             if not self.owner_id:
                 info = await self.api.async_get_personal_info()
                 self.owner_id = info.member_number
@@ -173,6 +179,7 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
                 self._active_until = time.time() + ACTIVE_HOLD_S
             self._connected_ids = connected_now
 
+            self._async_sync_devices(snapshots)
             self._tune_interval(snapshots)
             self._error_backoff = 0
             return CoordinatorData(machines=snapshots)
@@ -225,6 +232,35 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._info_cache[machine_id] = fresh
         self._info_fetched_at[machine_id] = time.time()
         return fresh
+
+    def _async_sync_devices(self, snapshots: dict[str, MachineSnapshot]) -> None:
+        """Push rename/firmware/serial changes to already-registered devices.
+
+        HA reads an entity's ``device_info`` only at registration, so later
+        changes on the Nespresso side need an explicit registry update.
+        """
+        dev_reg = dr.async_get(self.hass)
+        devices = {
+            identifier: device
+            for device in dr.async_entries_for_config_entry(
+                dev_reg, self._entry.entry_id
+            )
+            for domain, identifier in device.identifiers
+            if domain == DOMAIN
+        }
+        for machine_id, snap in snapshots.items():
+            if (device := devices.get(machine_id)) is None:
+                # Not registered yet; the entities will create it.
+                continue
+            info = build_device_info(machine_id, snap)
+            # Skip unknowns (e.g. a failed machineInfo fetch) so a transient
+            # gap doesn't wipe a known value. The registry no-ops if unchanged.
+            changes = {
+                key: info[key]
+                for key in ("name", "model", "model_id", "serial_number", "sw_version")
+                if info.get(key) is not None
+            }
+            dev_reg.async_update_device(device.id, **changes)
 
     def _apply_backoff(self) -> None:
         """Slow the poll after repeated cloud errors, capped."""

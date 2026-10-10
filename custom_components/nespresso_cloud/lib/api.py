@@ -39,6 +39,14 @@ def _user_agent_for(device_id: str) -> str:
 # Decoded JWT exp - iat = 7200s. Refresh a bit early to avoid 401 races.
 ACCESS_TOKEN_REFRESH_LEEWAY_S = 300
 
+# Bound each call so a stalled request can't hold a poll cycle for minutes
+# (aiohttp's default total timeout is 300s).
+REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=15)
+
+# Transport failures we map to NespressoError. A total timeout raises the
+# builtin TimeoutError (not a ClientError); ValueError covers non-JSON bodies.
+_TRANSPORT_ERRORS = (aiohttp.ClientError, TimeoutError, ValueError)
+
 # Integer enums for the cloud-reported machine fields. Unknown values
 # are surfaced as ``"unknown_<n>"`` so we never silently drop data.
 MACHINE_STATUS_LABELS: dict[int, str] = {
@@ -176,7 +184,7 @@ async def async_exchange_authorization_code(
     }
     try:
         async with session.post(
-            url, params=params, headers=headers, data=b""
+            url, params=params, headers=headers, data=b"", timeout=REQUEST_TIMEOUT
         ) as resp:
             body_text = await resp.text()
             if resp.status >= 400:
@@ -184,8 +192,8 @@ async def async_exchange_authorization_code(
                     f"Code exchange failed ({resp.status}): {body_text[:200]}"
                 )
             data = await resp.json(content_type=None)
-    except aiohttp.ClientError as err:
-        raise NespressoError(f"Code exchange network error: {err}") from err
+    except _TRANSPORT_ERRORS as err:
+        raise NespressoError(f"Code exchange network error: {err!r}") from err
     return Tokens(
         access_token=data["access_token"],
         refresh_token=data["refresh_token"],
@@ -246,7 +254,11 @@ class NespressoApiClient:
             }
             try:
                 async with self._session.post(
-                    url, params=params, headers=headers, data=b""
+                    url,
+                    params=params,
+                    headers=headers,
+                    data=b"",
+                    timeout=REQUEST_TIMEOUT,
                 ) as resp:
                     body_text = await resp.text()
                     if resp.status == 400 or resp.status == 401:
@@ -258,8 +270,8 @@ class NespressoApiClient:
                             f"Refresh failed ({resp.status}): {body_text[:200]}"
                         )
                     data = await resp.json(content_type=None)
-            except aiohttp.ClientError as err:
-                raise NespressoError(f"Refresh network error: {err}") from err
+            except _TRANSPORT_ERRORS as err:
+                raise NespressoError(f"Refresh network error: {err!r}") from err
 
             self._tokens = Tokens(
                 access_token=data["access_token"],
@@ -297,7 +309,7 @@ class NespressoApiClient:
 
         try:
             async with self._session.request(
-                method, url, headers=headers, json=json_body
+                method, url, headers=headers, json=json_body, timeout=REQUEST_TIMEOUT
             ) as resp:
                 if resp.status == 401:
                     # Token wedged mid-flight. One retry with a forced refresh.
@@ -306,12 +318,16 @@ class NespressoApiClient:
                     access_token = await self.async_ensure_token()
                     headers["Authorization"] = f"Bearer {access_token}"
                     async with self._session.request(
-                        method, url, headers=headers, json=json_body
+                        method,
+                        url,
+                        headers=headers,
+                        json=json_body,
+                        timeout=REQUEST_TIMEOUT,
                     ) as resp2:
                         return await _read_json_or_raise(resp2, path)
                 return await _read_json_or_raise(resp, path)
-        except aiohttp.ClientError as err:
-            raise NespressoError(f"Network error on {path}: {err}") from err
+        except _TRANSPORT_ERRORS as err:
+            raise NespressoError(f"Network error on {path}: {err!r}") from err
 
     # ------------------------------------------------------------------
     # ECapi endpoints

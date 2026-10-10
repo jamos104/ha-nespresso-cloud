@@ -166,6 +166,18 @@ On first run it walks you through the same browser bootstrap as the HA
 config flow, then writes the refresh token to a local `.env` file that
 subsequent runs reuse.
 
+### Tests
+
+The tests run the integration inside a real Home Assistant instance with
+the Nespresso cloud mocked at the HTTP layer. Home Assistant doesn't run
+on native Windows, so use Linux, macOS or WSL.
+
+```bash
+python3 -m venv .venv-test
+.venv-test/bin/pip install -r requirements_test.txt
+.venv-test/bin/python -m pytest
+```
+
 ## License
 
 [MIT](LICENSE).

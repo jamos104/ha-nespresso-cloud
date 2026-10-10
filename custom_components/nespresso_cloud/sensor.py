@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import logging
 from typing import Any, Callable
 
 from homeassistant.components.sensor import (
@@ -27,6 +28,11 @@ from .lib.api import (
     machine_status_label,
     milk_unit_status_label,
 )
+
+_LOGGER = logging.getLogger(__name__)
+
+# (sensor key, raw label) pairs already logged, so each new code warns once.
+_UNKNOWN_VALUES_LOGGED: set[tuple[str, str]] = set()
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -173,4 +179,17 @@ class NespressoSensor(NespressoCloudEntity, SensorEntity):
         snap = self._snapshot
         if snap is None:
             return None
-        return self.entity_description.value_fn(snap)
+        value = self.entity_description.value_fn(snap)
+        options = self.entity_description.options
+        if options is not None and value is not None and value not in options:
+            # HA rejects ENUM states outside ``options``; report an
+            # unmapped cloud code as unknown instead of failing the write.
+            if (self.entity_description.key, value) not in _UNKNOWN_VALUES_LOGGED:
+                _UNKNOWN_VALUES_LOGGED.add((self.entity_description.key, value))
+                _LOGGER.warning(
+                    "Unmapped %s value %s; please report it upstream",
+                    self.entity_description.key,
+                    value,
+                )
+            return None
+        return value

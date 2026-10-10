@@ -14,6 +14,7 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 .venv/
+.venv-test/
 venv/
 
 # Editor / OS.
