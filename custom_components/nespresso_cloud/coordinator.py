@@ -90,6 +90,9 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
             config_entry=entry,
         )
         self._entry = entry
+        # Set by async_setup_entry; compared on entry updates to tell an
+        # options change (reload) from a token rotation (no reload).
+        self.entry_settings: tuple = ()
         session = async_get_clientsession(hass)
 
         tokens = Tokens(

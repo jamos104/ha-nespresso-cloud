@@ -28,6 +28,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: NespressoCloudEntry) -> 
     except Exception as err:  # noqa: BLE001
         raise ConfigEntryNotReady(str(err)) from err
 
+    coordinator.entry_settings = _entry_settings(entry)
     entry.runtime_data = coordinator
     entry.async_on_unload(entry.add_update_listener(_async_reload_on_update))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
@@ -37,8 +38,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: NespressoCloudEntry) -> 
 async def _async_reload_on_update(
     hass: HomeAssistant, entry: NespressoCloudEntry
 ) -> None:
-    """Reload so the coordinator picks up changed options."""
+    """Reload so the coordinator picks up changed options.
+
+    Token rotation also updates the entry (``data``, every ~2h). Reloading on
+    that blanked every entity for a few seconds every two hours, so only an
+    options or polling-preference change reloads.
+    """
+    if entry.runtime_data.entry_settings == _entry_settings(entry):
+        return
     await hass.config_entries.async_reload(entry.entry_id)
+
+
+def _entry_settings(entry: ConfigEntry) -> tuple:
+    """The parts of an entry the coordinator reads only at setup."""
+    return (dict(entry.options), entry.pref_disable_polling)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: NespressoCloudEntry) -> bool:
