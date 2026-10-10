@@ -9,7 +9,7 @@ from .conftest import LIVE, setup_integration
 
 
 @pytest.mark.xfail(
-    strict=True, reason="Unmapped codes are rejected as invalid enum states (#3)"
+    strict=True, reason="Unmapped codes are rejected as invalid enum states (#3, fixed by #11)"
 )
 async def test_unmapped_machine_status_is_unknown(hass, entry, fake_api, caplog):
     fake_api.machine_status = 999
