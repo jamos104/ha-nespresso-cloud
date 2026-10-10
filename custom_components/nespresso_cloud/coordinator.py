@@ -45,6 +45,12 @@ from .lib import (
 
 _LOGGER = logging.getLogger(__name__)
 
+# Presence statuses meaning "the cloud has no live machine behind this ID" —
+# seen for a non-connected machine registered to the account (404 on
+# machineInfo, 420 on presence, on every poll). Such machines are parked and
+# re-probed once per MACHINE_LIST_TTL_S instead of every poll.
+MACHINE_REJECTED_STATUSES = frozenset({404, 420})
+
 
 @dataclass
 class MachineSnapshot:
@@ -112,6 +118,7 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._error_backoff = 0
         self._connected_ids: set[str] = set()
         self._active_until = 0.0
+        self._parked_at: dict[str, float] = {}
 
     async def _async_persist_tokens(self, tokens: Tokens) -> None:
         """Persist rotated tokens to the config entry.
@@ -144,9 +151,14 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
             snapshots: dict[str, MachineSnapshot] = {}
 
             for machine in machines:
-                presence = await self._safe(
-                    self.api.async_get_presence(self.owner_id, machine.id)
-                )
+                parked_at = self._parked_at.get(machine.id)
+                if parked_at is None or time.time() - parked_at >= MACHINE_LIST_TTL_S:
+                    presence = await self._async_presence(machine)
+                if machine.id in self._parked_at:
+                    snapshots[machine.id] = MachineSnapshot(
+                        machine=machine, status=None, presence=None, info=None
+                    )
+                    continue
                 connected = presence is not None and presence.connected
                 status = (
                     await self._safe(
@@ -206,6 +218,31 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._machines_cache = machines
         self._machines_fetched_at = time.time()
         return machines
+
+    async def _async_presence(self, machine: Machine) -> MachinePresence | None:
+        """Fetch presence, parking the machine if the cloud rejects its ID."""
+        try:
+            presence = await self.api.async_get_presence(self.owner_id, machine.id)
+        except NespressoAuthError:
+            raise
+        except NespressoError as err:
+            if err.status not in MACHINE_REJECTED_STATUSES:
+                _LOGGER.warning("Per-machine call failed: %s", err)
+                return None
+            if machine.id not in self._parked_at:
+                _LOGGER.warning(
+                    "Machine %s (%s) is rejected by the Nespresso cloud (%s); "
+                    "not polling it for 24h. Remove it from the Nespresso "
+                    "account if it is not a connected machine",
+                    machine.custom_name or machine.id,
+                    machine.type,
+                    err.status,
+                )
+            self._parked_at[machine.id] = time.time()
+            return None
+        if self._parked_at.pop(machine.id, None) is not None:
+            _LOGGER.info("Machine %s answers again", machine.custom_name or machine.id)
+        return presence
 
     async def _async_machine_info(self, machine_id: str) -> MachineInfo | None:
         """Return firmware/brand info, refetching at most once per TTL."""
