@@ -213,6 +213,20 @@ On first run it walks you through the same browser bootstrap as the HA
 config flow, then writes the refresh token to a local `.env` file that
 subsequent runs reuse.
 
+The tests set up the integration in a real Home Assistant test instance
+with the Nespresso API faked, so they need no account. They need Python
+3.14.2 or newer, like current Home Assistant.
+
+```bash
+uv pip install -r requirements_test.txt
+.venv/bin/python scripts/test.py
+```
+
+On Windows, run `.venv\Scripts\python.exe scripts\test.py`. Home Assistant
+doesn't support Windows, so the script stands in for the two Unix-only
+modules its test plugin imports; plain `pytest` won't start there. Tests
+marked `xfail` cover bugs not yet fixed on `main`.
+
 ## License
 
 [MIT](LICENSE).
