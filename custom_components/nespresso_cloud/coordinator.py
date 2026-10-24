@@ -28,6 +28,7 @@ from .const import (
     ERROR_BACKOFF_MAX_S,
     MACHINE_INFO_TTL_S,
     MACHINE_LIST_TTL_S,
+    PARK_RETRY_MIN_S,
     SCAN_INTERVAL_ACTIVE_S,
     SCAN_INTERVAL_IDLE_S,
     SCAN_INTERVAL_OFFLINE_S,
@@ -46,10 +47,19 @@ from .lib import (
 _LOGGER = logging.getLogger(__name__)
 
 # Presence statuses meaning "the cloud has no live machine behind this ID" —
-# seen for a non-connected machine registered to the account (404 on
-# machineInfo, 420 on presence, on every poll). Such machines are parked and
-# re-probed once per MACHINE_LIST_TTL_S instead of every poll.
+# seen on every poll for stale entries on an account (a replaced machine
+# answers 404, a leftover machinesB2CProfile entry 420). A live machine can
+# also 404 for a while during a cloud incident, so only a machine that hasn't
+# answered since setup is parked.
 MACHINE_REJECTED_STATUSES = frozenset({404, 420})
+
+
+@dataclass
+class _Parked:
+    """When a rejected machine is next probed, and the current retry interval."""
+
+    retry_at: float
+    interval: float
 
 
 @dataclass
@@ -118,7 +128,8 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
         self._error_backoff = 0
         self._connected_ids: set[str] = set()
         self._active_until = 0.0
-        self._parked_at: dict[str, float] = {}
+        self._answered: set[str] = set()
+        self._parked: dict[str, _Parked] = {}
 
     async def _async_persist_tokens(self, tokens: Tokens) -> None:
         """Persist rotated tokens to the config entry.
@@ -151,10 +162,10 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
             snapshots: dict[str, MachineSnapshot] = {}
 
             for machine in machines:
-                parked_at = self._parked_at.get(machine.id)
-                if parked_at is None or time.time() - parked_at >= MACHINE_LIST_TTL_S:
+                parked = self._parked.get(machine.id)
+                if parked is None or time.time() >= parked.retry_at:
                     presence = await self._async_presence(machine)
-                if machine.id in self._parked_at:
+                if machine.id in self._parked:
                     snapshots[machine.id] = MachineSnapshot(
                         machine=machine, status=None, presence=None, info=None
                     )
@@ -226,21 +237,30 @@ class NespressoCoordinator(DataUpdateCoordinator[CoordinatorData]):
         except NespressoAuthError:
             raise
         except NespressoError as err:
-            if err.status not in MACHINE_REJECTED_STATUSES:
+            if (
+                err.status not in MACHINE_REJECTED_STATUSES
+                or machine.id in self._answered
+            ):
                 _LOGGER.warning("Per-machine call failed: %s", err)
                 return None
-            if machine.id not in self._parked_at:
+            parked = self._parked.get(machine.id)
+            if parked is None:
                 _LOGGER.warning(
-                    "Machine %s (%s) is rejected by the Nespresso cloud (%s); "
-                    "not polling it for 24h. Remove it from the Nespresso "
-                    "account if it is not a connected machine",
+                    "Machine %s (%s) is rejected by the Nespresso cloud (%s) "
+                    "and hasn't answered since setup; polling it less often. "
+                    "Remove it from the Nespresso account if it is not a "
+                    "connected machine",
                     machine.custom_name or machine.id,
                     machine.type,
                     err.status,
                 )
-            self._parked_at[machine.id] = time.time()
+                interval = PARK_RETRY_MIN_S
+            else:
+                interval = min(parked.interval * 2, MACHINE_LIST_TTL_S)
+            self._parked[machine.id] = _Parked(time.time() + interval, interval)
             return None
-        if self._parked_at.pop(machine.id, None) is not None:
+        self._answered.add(machine.id)
+        if self._parked.pop(machine.id, None) is not None:
             _LOGGER.info("Machine %s answers again", machine.custom_name or machine.id)
         return presence
 
