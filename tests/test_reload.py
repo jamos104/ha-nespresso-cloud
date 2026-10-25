@@ -8,7 +8,7 @@ from custom_components.nespresso_cloud.lib import Tokens
 
 
 @pytest.mark.xfail(
-    strict=True, reason="Token rotation reloads the entry every ~2h (fixed by #10)"
+    strict=True, reason="Token rotation reloads the entry every ~2h (fixed by #2)"
 )
 async def test_token_rotation_does_not_reload(hass, entry, fake_api):
     await setup_integration(hass, entry)
